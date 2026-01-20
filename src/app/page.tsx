@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { RefreshCw, Activity } from 'lucide-react';
+import { RefreshCw, Activity, Wifi, WifiOff } from 'lucide-react';
 import { ScreenerTable } from '@/components/ScreenerTable';
 import { AlertsLog } from '@/components/AlertsLog';
 import { Watchlist } from '@/components/Watchlist';
@@ -12,8 +12,16 @@ import {
   DEFAULT_WATCHLIST,
   TIMEFRAMES,
   VolatilityAnalysis,
+  Candle,
 } from '@/lib/types';
-import { fetchSymbols, analyzeMultipleSymbols } from '@/lib/delta-client';
+import {
+  fetchSymbols,
+  initializeCandleStore,
+  updateCandle,
+  analyzeFromStore,
+  clearSymbolFromStore,
+} from '@/lib/delta-client';
+import { deltaWebSocket } from '@/lib/delta-websocket';
 
 type Tab = 'screener' | 'watchlist' | 'settings';
 
@@ -35,9 +43,11 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [enabledTimeframes, setEnabledTimeframes] = useState<string[]>(DEFAULT_ENABLED_TIMEFRAMES);
+  const [wsConnected, setWsConnected] = useState(false);
 
   const previousDataRef = useRef<ScreenerData>({});
   const isInitialLoadRef = useRef(true);
+  const wsInitializedRef = useRef(false);
 
   // Load from localStorage on mount
   useEffect(() => {
@@ -176,7 +186,44 @@ export default function Home() {
     previousDataRef.current = newData;
   }, []);
 
-  // Fetch screener data directly from Delta Exchange
+  // Handle incoming WebSocket candle update
+  const handleCandleUpdate = useCallback((symbol: string, timeframe: string, candle: Candle) => {
+    // Only process if symbol is in watchlist and timeframe is enabled
+    if (!watchlist.includes(symbol) || !enabledTimeframes.includes(timeframe)) {
+      return;
+    }
+
+    // Update candle store and check if this is a new candle
+    const isNewCandle = updateCandle(symbol, timeframe, candle);
+
+    // Recalculate analysis for this symbol/timeframe
+    const analysis = analyzeFromStore(symbol, timeframe);
+    if (!analysis) return;
+
+    // Update screener data
+    setScreenerData(prev => {
+      const updated = { ...prev };
+      if (!updated[symbol]) {
+        updated[symbol] = {};
+      }
+      updated[symbol] = {
+        ...updated[symbol],
+        [timeframe]: analysis,
+      };
+      return updated;
+    });
+
+    // Only check for alerts on new candle close (not during candle formation)
+    if (isNewCandle) {
+      const newData: ScreenerData = {
+        [symbol]: { [timeframe]: analysis },
+      };
+      checkForAlerts(newData, [timeframe]);
+      setLastRefresh(new Date());
+    }
+  }, [watchlist, enabledTimeframes, checkForAlerts]);
+
+  // Initialize data and connect to WebSocket
   const fetchData = useCallback(async (showLoading = false) => {
     if (watchlist.length === 0 || enabledTimeframes.length === 0) {
       setIsLoading(false);
@@ -189,7 +236,8 @@ export default function Home() {
     }
 
     try {
-      const data = await analyzeMultipleSymbols(watchlist, enabledTimeframes);
+      // Fetch historical data and populate candle store
+      const data = await initializeCandleStore(watchlist, enabledTimeframes);
       checkForAlerts(data, enabledTimeframes);
       setScreenerData(data);
       setLastRefresh(new Date());
@@ -202,34 +250,55 @@ export default function Home() {
     }
   }, [watchlist, enabledTimeframes, checkForAlerts]);
 
-  // Initial fetch and auto-refresh aligned to 1-minute boundaries
+  // Initial fetch
   useEffect(() => {
-    fetchData(true); // Show loading on initial fetch
+    fetchData(true);
+  }, [fetchData]);
 
-    // Calculate ms until next minute boundary + 50ms delay for candle close
-    const DELAY_AFTER_MINUTE = 50; // ms delay after minute to ensure candle is closed
+  // WebSocket status handler
+  const handleWsStatus = useCallback((connected: boolean) => {
+    setWsConnected(connected);
+  }, []);
 
-    const scheduleNextFetch = () => {
-      const now = Date.now();
-      const msUntilNextMinute = 60000 - (now % 60000);
-      const nextFetchIn = msUntilNextMinute + DELAY_AFTER_MINUTE;
+  // WebSocket connection and subscription management
+  useEffect(() => {
+    if (watchlist.length === 0 || enabledTimeframes.length === 0) {
+      return;
+    }
 
-      return setTimeout(() => {
-        fetchData(false);
-        // Schedule the next fetch
-        intervalRef.current = scheduleNextFetch();
-      }, nextFetchIn);
-    };
+    // Connect to WebSocket
+    const connectWebSocket = async () => {
+      try {
+        await deltaWebSocket.connect(handleCandleUpdate, handleWsStatus);
+        wsInitializedRef.current = true;
 
-    // Store interval ref for cleanup
-    const intervalRef = { current: scheduleNextFetch() };
-
-    return () => {
-      if (intervalRef.current) {
-        clearTimeout(intervalRef.current);
+        // Subscribe to candlestick channels
+        deltaWebSocket.subscribe(watchlist, enabledTimeframes);
+      } catch (error) {
+        console.error('Failed to connect WebSocket:', error);
+        setWsConnected(false);
       }
     };
-  }, [fetchData]);
+
+    // If already connected, just update subscriptions
+    if (deltaWebSocket.isConnected()) {
+      deltaWebSocket.subscribe(watchlist, enabledTimeframes);
+    } else if (!wsInitializedRef.current) {
+      connectWebSocket();
+    }
+
+    // Cleanup on unmount
+    return () => {
+      // Don't disconnect on every re-render, only on unmount
+    };
+  }, [watchlist, enabledTimeframes, handleCandleUpdate, handleWsStatus]);
+
+  // Disconnect WebSocket on unmount
+  useEffect(() => {
+    return () => {
+      deltaWebSocket.disconnect();
+    };
+  }, []);
 
   // Handlers
   const handleAddSymbol = (symbol: string) => {
@@ -245,6 +314,8 @@ export default function Home() {
       delete newData[symbol];
       return newData;
     });
+    // Clear from candle store
+    clearSymbolFromStore(symbol);
   };
 
   const handleClearAlerts = () => {
@@ -286,8 +357,22 @@ export default function Home() {
                 Last updated: {lastRefresh.toLocaleTimeString()}
               </span>
             )}
-            <span className="px-3 py-1 text-xs bg-gray-800 border border-green-500/30 text-green-400 rounded-full">
-              Live
+            <span className={`flex items-center gap-1.5 px-3 py-1 text-xs bg-gray-800 border rounded-full ${
+              wsConnected
+                ? 'border-green-500/30 text-green-400'
+                : 'border-yellow-500/30 text-yellow-400'
+            }`}>
+              {wsConnected ? (
+                <>
+                  <Wifi className="w-3 h-3" />
+                  Live
+                </>
+              ) : (
+                <>
+                  <WifiOff className="w-3 h-3" />
+                  Connecting...
+                </>
+              )}
             </span>
           </div>
         </header>
@@ -449,7 +534,7 @@ export default function Home() {
 
         {/* Footer */}
         <footer className="mt-12 pt-6 border-t border-gray-800 text-center text-gray-600 text-sm">
-          Data from Delta Exchange | Auto-refresh at minute boundary
+          Data from Delta Exchange | Real-time WebSocket updates
         </footer>
       </div>
     </div>

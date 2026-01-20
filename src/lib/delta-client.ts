@@ -1,6 +1,6 @@
 // Delta Exchange Client-Side API - Direct browser calls
 
-import { Candle, TIMEFRAMES } from './types';
+import { Candle, TIMEFRAMES, VolatilityAnalysis } from './types';
 import { analyzeVolatility } from './indicators';
 
 // Delta Exchange India API base URL
@@ -10,6 +10,11 @@ const DELTA_API_BASE = 'https://api.india.delta.exchange';
 let symbolsCache: string[] = [];
 let symbolsCacheTime = 0;
 const CACHE_DURATION = 4 * 60 * 60 * 1000; // 4 hours
+
+// Candle storage for real-time updates
+// Structure: { "BTCUSD": { "1m": Candle[], "5m": Candle[] } }
+const candleStore: Map<string, Map<string, Candle[]>> = new Map();
+const MAX_CANDLES = 250; // Keep last 250 candles per symbol/timeframe
 
 // Timeframe to resolution mapping
 const TIMEFRAME_TO_RESOLUTION: Record<string, string> = {
@@ -225,4 +230,138 @@ export async function analyzeMultipleSymbols(
   }
 
   return results;
+}
+
+// ============================================================
+// Candle Store Management for WebSocket Real-time Updates
+// ============================================================
+
+/**
+ * Store candles for a symbol/timeframe (called after initial REST fetch)
+ */
+export function storeCandles(symbol: string, timeframe: string, candles: Candle[]): void {
+  if (!candleStore.has(symbol)) {
+    candleStore.set(symbol, new Map());
+  }
+  const symbolMap = candleStore.get(symbol)!;
+  // Keep only the last MAX_CANDLES
+  symbolMap.set(timeframe, candles.slice(-MAX_CANDLES));
+}
+
+/**
+ * Get stored candles for a symbol/timeframe
+ */
+export function getStoredCandles(symbol: string, timeframe: string): Candle[] | null {
+  return candleStore.get(symbol)?.get(timeframe) || null;
+}
+
+/**
+ * Update candles with a new candle from WebSocket
+ * - If candle time matches last candle, update it (candle in progress)
+ * - If candle time is newer, append it (new candle)
+ * Returns true if this created a new candle (for alert checking)
+ */
+export function updateCandle(symbol: string, timeframe: string, newCandle: Candle): boolean {
+  const candles = getStoredCandles(symbol, timeframe);
+  if (!candles || candles.length === 0) return false;
+
+  const lastCandle = candles[candles.length - 1];
+
+  // Same candle - update in place (candle still forming)
+  if (newCandle.time === lastCandle.time) {
+    candles[candles.length - 1] = newCandle;
+    return false;
+  }
+
+  // New candle - append and trim
+  if (newCandle.time > lastCandle.time) {
+    candles.push(newCandle);
+    // Keep only last MAX_CANDLES
+    if (candles.length > MAX_CANDLES) {
+      candles.shift();
+    }
+    return true; // New candle created
+  }
+
+  return false;
+}
+
+/**
+ * Analyze from stored candles (used after WebSocket update)
+ */
+export function analyzeFromStore(symbol: string, timeframe: string): VolatilityAnalysis | null {
+  const candles = getStoredCandles(symbol, timeframe);
+  if (!candles) return null;
+  return analyzeVolatility(candles);
+}
+
+/**
+ * Fetch and store candles for initial load
+ */
+export async function fetchAndStoreCandles(
+  symbol: string,
+  timeframe: string,
+  numCandles = 200
+): Promise<Candle[]> {
+  const candles = await fetchCandles(symbol, timeframe, numCandles);
+  if (candles.length > 0) {
+    storeCandles(symbol, timeframe, candles);
+  }
+  return candles;
+}
+
+/**
+ * Initialize candle store for multiple symbols/timeframes
+ * Returns analysis results for all
+ */
+export async function initializeCandleStore(
+  symbols: string[],
+  timeframes: string[] = TIMEFRAMES
+): Promise<Record<string, Record<string, VolatilityAnalysis>>> {
+  const results: Record<string, Record<string, VolatilityAnalysis>> = {};
+
+  // Process in batches of 5
+  const batchSize = 5;
+  for (let i = 0; i < symbols.length; i += batchSize) {
+    const batch = symbols.slice(i, i + batchSize);
+
+    const promises = batch.map(async (symbol) => {
+      const symbolResults: Record<string, VolatilityAnalysis> = {};
+
+      // Fetch all timeframes in parallel for this symbol
+      const tfPromises = timeframes.map(async (tf) => {
+        const candles = await fetchAndStoreCandles(symbol, tf);
+        const analysis = analyzeVolatility(candles);
+        return { tf, analysis };
+      });
+
+      const tfResults = await Promise.all(tfPromises);
+      for (const { tf, analysis } of tfResults) {
+        symbolResults[tf] = analysis;
+      }
+
+      return { symbol, symbolResults };
+    });
+
+    const batchResults = await Promise.all(promises);
+    for (const { symbol, symbolResults } of batchResults) {
+      results[symbol] = symbolResults;
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Clear candle store for a symbol (when removed from watchlist)
+ */
+export function clearSymbolFromStore(symbol: string): void {
+  candleStore.delete(symbol);
+}
+
+/**
+ * Clear entire candle store
+ */
+export function clearCandleStore(): void {
+  candleStore.clear();
 }
