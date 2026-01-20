@@ -83,10 +83,10 @@ export const DEFAULT_SETTINGS: Settings = {
   atrPeriod: 14,
   squeezeThreshold: 20,
   tightSqueezeThreshold: 10,
-  visibleTimeframes: ['1h', '4h', '1d'],
+  visibleTimeframes: ['1m', '5m', '15m', '30m', '1h', '4h', '1d'],
   refreshInterval: 60000,
 };
 
 export const DEFAULT_WATCHLIST = ['BTCUSD', 'ETHUSD', 'SOLUSD', 'BNBUSD', 'DOGEUSD'];
 
-export const TIMEFRAMES = ['1h', '4h', '1d'];
+export const TIMEFRAMES = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'];

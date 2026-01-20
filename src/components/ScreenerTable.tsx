@@ -39,7 +39,7 @@ export function ScreenerTable({
                 Price
               </th>
               {timeframes.map((tf) => (
-                <th key={tf} className="px-4 py-3 text-center text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                <th key={tf} className="px-4 py-3 text-center text-xs font-semibold text-gray-400 tracking-wider">
                   {tf}
                 </th>
               ))}
@@ -80,8 +80,8 @@ export function ScreenerTable({
               Price
             </th>
             {timeframes.map((tf) => (
-              <th key={tf} className="px-4 py-3 text-center text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                {tf.toUpperCase()}
+              <th key={tf} className="px-4 py-3 text-center text-xs font-semibold text-gray-400 tracking-wider">
+                {tf}
               </th>
             ))}
           </tr>

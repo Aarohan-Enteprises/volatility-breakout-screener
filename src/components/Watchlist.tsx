@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import { Plus, X } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { Plus, X, ChevronDown, Search } from 'lucide-react';
 
 interface WatchlistProps {
   watchlist: string[];
@@ -11,110 +11,119 @@ interface WatchlistProps {
 }
 
 export function Watchlist({ watchlist, allSymbols, onAdd, onRemove }: WatchlistProps) {
-  const [input, setInput] = useState('');
-  const [showDropdown, setShowDropdown] = useState(false);
-  const [filteredSymbols, setFilteredSymbols] = useState<string[]>([]);
+  const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState('');
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (input.length > 0) {
-      const query = input.toUpperCase();
-      const filtered = allSymbols
-        .filter(s => s.includes(query) && !watchlist.includes(s))
-        .slice(0, 10);
-      setFilteredSymbols(filtered);
-      setShowDropdown(filtered.length > 0);
-    } else {
-      setFilteredSymbols([]);
-      setShowDropdown(false);
-    }
-  }, [input, allSymbols, watchlist]);
+  // Filter out symbols already in watchlist
+  const availableSymbols = allSymbols.filter(s => !watchlist.includes(s));
 
+  // Filter by search
+  const filteredSymbols = search
+    ? availableSymbols.filter(s => s.toLowerCase().includes(search.toLowerCase()))
+    : availableSymbols;
+
+  // Close dropdown when clicking outside
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setShowDropdown(false);
+        setIsOpen(false);
+        setSearch('');
       }
     }
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const handleAdd = (symbol: string) => {
+  const handleSelect = (symbol: string) => {
     onAdd(symbol);
-    setInput('');
-    setShowDropdown(false);
-  };
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const symbol = input.toUpperCase().trim();
-    if (symbol && allSymbols.includes(symbol) && !watchlist.includes(symbol)) {
-      handleAdd(symbol);
-    }
+    setIsOpen(false);
+    setSearch('');
   };
 
   return (
     <div>
       <h2 className="text-xl font-semibold mb-4">Manage Watchlist</h2>
 
-      {/* Add Symbol Form */}
+      {/* Dropdown Select */}
       <div className="relative mb-6" ref={dropdownRef}>
-        <form onSubmit={handleSubmit} className="flex gap-3">
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Search symbol (e.g., BTCUSD)"
-            className="flex-1 px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
-          />
-          <button
-            type="submit"
-            className="flex items-center gap-2 px-5 py-3 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-            Add
-          </button>
-        </form>
+        <button
+          onClick={() => setIsOpen(!isOpen)}
+          className="w-full flex items-center justify-between px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-white hover:border-gray-600 transition-colors"
+        >
+          <span className="text-gray-400">Select symbol to add...</span>
+          <ChevronDown className={`w-5 h-5 text-gray-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+        </button>
 
-        {/* Autocomplete Dropdown */}
-        {showDropdown && (
-          <div className="absolute top-full left-0 right-[100px] mt-1 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-50 max-h-[250px] overflow-y-auto">
-            {filteredSymbols.map((symbol) => (
-              <button
-                key={symbol}
-                onClick={() => handleAdd(symbol)}
-                className="w-full px-4 py-3 text-left hover:bg-gray-800 transition-colors first:rounded-t-lg last:rounded-b-lg"
-              >
-                {symbol}
-              </button>
-            ))}
+        {/* Dropdown Menu */}
+        {isOpen && (
+          <div className="absolute top-full left-0 right-0 mt-1 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-50">
+            {/* Search Input */}
+            <div className="p-2 border-b border-gray-700">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search symbols..."
+                  autoFocus
+                  className="w-full pl-9 pr-4 py-2 bg-gray-800 border border-gray-700 rounded-md text-white placeholder-gray-500 text-sm focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            </div>
+
+            {/* Symbol List */}
+            <div className="max-h-[300px] overflow-y-auto">
+              {filteredSymbols.length === 0 ? (
+                <div className="px-4 py-6 text-center text-gray-500 text-sm">
+                  {search ? 'No symbols found' : 'All symbols already added'}
+                </div>
+              ) : (
+                filteredSymbols.map((symbol) => (
+                  <button
+                    key={symbol}
+                    onClick={() => handleSelect(symbol)}
+                    className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-gray-800 transition-colors text-sm"
+                  >
+                    <span>{symbol}</span>
+                    <Plus className="w-4 h-4 text-gray-500" />
+                  </button>
+                ))
+              )}
+            </div>
           </div>
         )}
       </div>
 
       {/* Watchlist Items */}
-      <div className="space-y-3">
+      <div className="space-y-2">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-medium text-gray-400">Current Watchlist ({watchlist.length})</h3>
+        </div>
+
         {watchlist.length === 0 ? (
           <div className="text-center text-gray-500 py-8 bg-gray-900 rounded-lg border border-gray-800">
-            No symbols in watchlist. Use the search above to add symbols.
+            No symbols in watchlist. Use the dropdown above to add symbols.
           </div>
         ) : (
-          watchlist.map((symbol) => (
-            <div
-              key={symbol}
-              className="flex items-center justify-between p-4 bg-gray-900 border border-gray-800 rounded-lg hover:border-gray-700 transition-colors"
-            >
-              <span className="font-semibold">{symbol}</span>
-              <button
-                onClick={() => onRemove(symbol)}
-                className="flex items-center gap-1 px-3 py-1.5 text-sm text-red-400 border border-red-400/30 hover:bg-red-400/10 rounded-md transition-colors"
+          <div className="grid gap-2">
+            {watchlist.map((symbol) => (
+              <div
+                key={symbol}
+                className="flex items-center justify-between px-4 py-3 bg-gray-900 border border-gray-800 rounded-lg hover:border-gray-700 transition-colors"
               >
-                <X className="w-3 h-3" />
-                Remove
-              </button>
-            </div>
-          ))
+                <span className="font-semibold">{symbol}</span>
+                <button
+                  onClick={() => onRemove(symbol)}
+                  className="flex items-center gap-1 px-2 py-1 text-sm text-red-400 hover:bg-red-400/10 rounded transition-colors"
+                  title="Remove from watchlist"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
         )}
       </div>
     </div>

@@ -36,6 +36,37 @@ const TIMEFRAME_SECONDS: Record<string, number> = {
 };
 
 /**
+ * Align timestamp to candle boundary (start of candle period)
+ * This ensures we fetch complete candles only
+ */
+function alignToCandelBoundary(timestamp: number, timeframe: string): number {
+  const tfSeconds = TIMEFRAME_SECONDS[timeframe] || 3600;
+
+  if (timeframe === '1w') {
+    // Align to Monday 00:00 UTC
+    // JavaScript getDay(): 0 = Sunday, 1 = Monday, etc.
+    const date = new Date(timestamp * 1000);
+    const day = date.getUTCDay();
+    // Calculate days since last Monday (if Sunday, go back 6 days; if Monday, 0 days; etc.)
+    const daysSinceMonday = day === 0 ? 6 : day - 1;
+    date.setUTCHours(0, 0, 0, 0);
+    date.setUTCDate(date.getUTCDate() - daysSinceMonday);
+    return Math.floor(date.getTime() / 1000);
+  }
+
+  if (timeframe === '1d') {
+    // Align to UTC midnight (00:00 UTC)
+    const date = new Date(timestamp * 1000);
+    date.setUTCHours(0, 0, 0, 0);
+    return Math.floor(date.getTime() / 1000);
+  }
+
+  // For intraday timeframes (1m, 5m, 15m, 30m, 1h, 4h)
+  // Simply floor to the interval boundary
+  return Math.floor(timestamp / tfSeconds) * tfSeconds;
+}
+
+/**
  * Fetch all available symbols from Delta Exchange
  */
 export async function fetchSymbols(): Promise<string[]> {
@@ -76,19 +107,25 @@ export async function fetchSymbols(): Promise<string[]> {
 
 /**
  * Fetch historical candles for a symbol
+ * Uses aligned time boundaries to ensure complete candles only
  */
 export async function fetchCandles(
   symbol: string,
   timeframe: string,
   numCandles = 200
 ): Promise<Candle[]> {
-  const now = Math.floor(Date.now() / 1000);
+  const nowSeconds = Math.floor(Date.now() / 1000);
   const tfSeconds = TIMEFRAME_SECONDS[timeframe] || 3600;
-  const start = now - (tfSeconds * numCandles);
   const resolution = TIMEFRAME_TO_RESOLUTION[timeframe] || '1h';
 
+  // Align end time to the start of current candle (excludes incomplete candle)
+  const end = alignToCandelBoundary(nowSeconds, timeframe);
+
+  // Calculate start time: go back numCandles from the aligned end
+  const start = end - (tfSeconds * numCandles);
+
   try {
-    const url = `${DELTA_API_BASE}/v2/history/candles?symbol=${symbol}&resolution=${resolution}&start=${start}&end=${now}`;
+    const url = `${DELTA_API_BASE}/v2/history/candles?symbol=${symbol}&resolution=${resolution}&start=${start}&end=${end}`;
     const response = await fetch(url);
 
     if (!response.ok) {

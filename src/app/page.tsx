@@ -20,7 +20,11 @@ type Tab = 'screener' | 'watchlist' | 'settings';
 const STORAGE_KEYS = {
   WATCHLIST: 'vbs_watchlist',
   ALERTS: 'vbs_alerts',
+  ENABLED_TIMEFRAMES: 'vbs_enabled_timeframes',
 };
+
+// Default enabled timeframes (15m and 4h disabled by default)
+const DEFAULT_ENABLED_TIMEFRAMES = ['1m', '5m', '30m', '1h', '1d'];
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>('screener');
@@ -30,13 +34,16 @@ export default function Home() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const [enabledTimeframes, setEnabledTimeframes] = useState<string[]>(DEFAULT_ENABLED_TIMEFRAMES);
 
   const previousDataRef = useRef<ScreenerData>({});
+  const isInitialLoadRef = useRef(true);
 
   // Load from localStorage on mount
   useEffect(() => {
     const savedWatchlist = localStorage.getItem(STORAGE_KEYS.WATCHLIST);
     const savedAlerts = localStorage.getItem(STORAGE_KEYS.ALERTS);
+    const savedTimeframes = localStorage.getItem(STORAGE_KEYS.ENABLED_TIMEFRAMES);
 
     if (savedWatchlist) {
       try {
@@ -55,6 +62,14 @@ export default function Home() {
         setAlerts([]);
       }
     }
+
+    if (savedTimeframes) {
+      try {
+        setEnabledTimeframes(JSON.parse(savedTimeframes));
+      } catch {
+        setEnabledTimeframes(DEFAULT_ENABLED_TIMEFRAMES);
+      }
+    }
   }, []);
 
   // Save watchlist to localStorage
@@ -69,6 +84,11 @@ export default function Home() {
     localStorage.setItem(STORAGE_KEYS.ALERTS, JSON.stringify(alerts.slice(0, 50)));
   }, [alerts]);
 
+  // Save enabled timeframes to localStorage
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.ENABLED_TIMEFRAMES, JSON.stringify(enabledTimeframes));
+  }, [enabledTimeframes]);
+
   // Fetch symbols directly from Delta Exchange
   useEffect(() => {
     async function loadSymbols() {
@@ -82,20 +102,29 @@ export default function Home() {
     loadSymbols();
   }, []);
 
-  // Check for alerts
-  const checkForAlerts = useCallback((newData: ScreenerData) => {
+  // Check for alerts (only after initial load)
+  const checkForAlerts = useCallback((newData: ScreenerData, timeframes: string[]) => {
+    // On initial load, just store data as baseline without generating alerts
+    if (isInitialLoadRef.current) {
+      previousDataRef.current = newData;
+      isInitialLoadRef.current = false;
+      return;
+    }
+
     const previousData = previousDataRef.current;
     const newAlerts: Alert[] = [];
 
     for (const symbol of Object.keys(newData)) {
-      for (const tf of TIMEFRAMES) {
+      for (const tf of timeframes) {
         const current = newData[symbol]?.[tf] as VolatilityAnalysis | undefined;
         const previous = previousData[symbol]?.[tf] as VolatilityAnalysis | undefined;
 
+        // Skip if no current data or no previous data for comparison
         if (!current || current.status !== 'OK') continue;
+        if (!previous || previous.status !== 'OK') continue;
 
-        // Check for breakout
-        if (current.signal && (!previous || previous.signal !== current.signal)) {
+        // Check for breakout (signal appeared or changed)
+        if (current.signal && previous.signal !== current.signal) {
           newAlerts.push({
             id: `${symbol}-${tf}-${Date.now()}`,
             type: 'breakout',
@@ -107,10 +136,10 @@ export default function Home() {
             timestamp: Date.now(),
           });
         }
-        // Check for squeeze entry
+        // Check for squeeze entry (transition from NORMAL/EXPANSION to SQUEEZE/TIGHT_SQUEEZE)
         else if (
           (current.squeezeState === 'SQUEEZE' || current.squeezeState === 'TIGHT_SQUEEZE') &&
-          (!previous || previous.squeezeState === 'NORMAL')
+          (previous.squeezeState === 'NORMAL' || previous.squeezeState === 'EXPANSION')
         ) {
           newAlerts.push({
             id: `${symbol}-${tf}-${Date.now()}`,
@@ -122,10 +151,10 @@ export default function Home() {
             timestamp: Date.now(),
           });
         }
-        // Check for tight squeeze
+        // Check for tight squeeze (transition from SQUEEZE to TIGHT_SQUEEZE)
         else if (
           current.squeezeState === 'TIGHT_SQUEEZE' &&
-          previous?.squeezeState === 'SQUEEZE'
+          previous.squeezeState === 'SQUEEZE'
         ) {
           newAlerts.push({
             id: `${symbol}-${tf}-${Date.now()}`,
@@ -148,31 +177,58 @@ export default function Home() {
   }, []);
 
   // Fetch screener data directly from Delta Exchange
-  const fetchData = useCallback(async () => {
-    if (watchlist.length === 0) {
+  const fetchData = useCallback(async (showLoading = false) => {
+    if (watchlist.length === 0 || enabledTimeframes.length === 0) {
       setIsLoading(false);
       return;
     }
 
-    setIsLoading(true);
+    // Only show loading on initial load, not on background refreshes
+    if (showLoading) {
+      setIsLoading(true);
+    }
+
     try {
-      const data = await analyzeMultipleSymbols(watchlist, TIMEFRAMES);
-      checkForAlerts(data);
+      const data = await analyzeMultipleSymbols(watchlist, enabledTimeframes);
+      checkForAlerts(data, enabledTimeframes);
       setScreenerData(data);
       setLastRefresh(new Date());
     } catch (error) {
       console.error('Failed to fetch data:', error);
     } finally {
-      setIsLoading(false);
+      if (showLoading) {
+        setIsLoading(false);
+      }
     }
-  }, [watchlist, checkForAlerts]);
+  }, [watchlist, enabledTimeframes, checkForAlerts]);
 
-  // Initial fetch and auto-refresh
+  // Initial fetch and auto-refresh aligned to 1-minute boundaries
   useEffect(() => {
-    fetchData();
+    fetchData(true); // Show loading on initial fetch
 
-    const interval = setInterval(fetchData, 60000); // Refresh every 60 seconds
-    return () => clearInterval(interval);
+    // Calculate ms until next minute boundary + 50ms delay for candle close
+    const DELAY_AFTER_MINUTE = 50; // ms delay after minute to ensure candle is closed
+
+    const scheduleNextFetch = () => {
+      const now = Date.now();
+      const msUntilNextMinute = 60000 - (now % 60000);
+      const nextFetchIn = msUntilNextMinute + DELAY_AFTER_MINUTE;
+
+      return setTimeout(() => {
+        fetchData(false);
+        // Schedule the next fetch
+        intervalRef.current = scheduleNextFetch();
+      }, nextFetchIn);
+    };
+
+    // Store interval ref for cleanup
+    const intervalRef = { current: scheduleNextFetch() };
+
+    return () => {
+      if (intervalRef.current) {
+        clearTimeout(intervalRef.current);
+      }
+    };
   }, [fetchData]);
 
   // Handlers
@@ -194,6 +250,20 @@ export default function Home() {
   const handleClearAlerts = () => {
     setAlerts([]);
     localStorage.removeItem(STORAGE_KEYS.ALERTS);
+  };
+
+  const handleToggleTimeframe = (timeframe: string) => {
+    setEnabledTimeframes(prev => {
+      if (prev.includes(timeframe)) {
+        // Don't allow disabling all timeframes
+        if (prev.length === 1) return prev;
+        return prev.filter(tf => tf !== timeframe);
+      } else {
+        // Add and sort by TIMEFRAMES order
+        const newTimeframes = [...prev, timeframe];
+        return TIMEFRAMES.filter(tf => newTimeframes.includes(tf));
+      }
+    });
   };
 
   return (
@@ -246,7 +316,7 @@ export default function Home() {
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold">Volatility Analysis</h2>
                 <button
-                  onClick={fetchData}
+                  onClick={() => fetchData(true)}
                   disabled={isLoading}
                   className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm transition-colors disabled:opacity-50"
                 >
@@ -259,7 +329,7 @@ export default function Home() {
 
               <ScreenerTable
                 data={screenerData}
-                timeframes={TIMEFRAMES}
+                timeframes={enabledTimeframes}
                 isLoading={isLoading}
                 onSymbolClick={handleAddSymbol}
               />
@@ -349,9 +419,29 @@ export default function Home() {
                   </div>
                 </div>
 
-                <button className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition-colors">
-                  Save Settings
-                </button>
+                <div className="bg-gray-900 border border-gray-800 rounded-lg p-5">
+                  <h3 className="text-sm font-semibold text-gray-400 mb-4">
+                    Timeframes
+                  </h3>
+                  <p className="text-xs text-gray-500 mb-4">
+                    Select which timeframes to display and analyze
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {TIMEFRAMES.map((tf) => (
+                      <button
+                        key={tf}
+                        onClick={() => handleToggleTimeframe(tf)}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                          enabledTimeframes.includes(tf)
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                        }`}
+                      >
+                        {tf}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -359,7 +449,7 @@ export default function Home() {
 
         {/* Footer */}
         <footer className="mt-12 pt-6 border-t border-gray-800 text-center text-gray-600 text-sm">
-          Data from Delta Exchange | Auto-refresh: 60s
+          Data from Delta Exchange | Auto-refresh at minute boundary
         </footer>
       </div>
     </div>

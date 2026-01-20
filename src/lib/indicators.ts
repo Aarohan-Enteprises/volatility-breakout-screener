@@ -1,5 +1,7 @@
 // Technical Indicators for Volatility Breakout Screener
+// Using trading-signals library for accurate calculations
 
+import { BollingerBands as TSBollingerBands, ATR as TSATR, SMA as TSSMA } from 'trading-signals';
 import {
   Candle,
   BollingerBands,
@@ -22,158 +24,117 @@ const CONFIG = {
   VOLUME_SURGE_MULTIPLIER: 1.5,
 };
 
-// Simple Moving Average
-function sma(data: number[], period: number): (number | null)[] {
-  const result: (number | null)[] = [];
-  for (let i = 0; i < data.length; i++) {
-    if (i < period - 1) {
-      result.push(null);
-    } else {
-      const slice = data.slice(i - period + 1, i + 1);
-      const sum = slice.reduce((a, b) => a + b, 0);
-      result.push(sum / period);
-    }
-  }
-  return result;
-}
-
-// Exponential Moving Average
-function ema(data: number[], period: number): number[] {
-  const result: number[] = [];
-  const multiplier = 2 / (period + 1);
-
-  for (let i = 0; i < data.length; i++) {
-    if (i === 0) {
-      result.push(data[i]);
-    } else if (i < period - 1) {
-      const slice = data.slice(0, i + 1);
-      const sum = slice.reduce((a, b) => a + b, 0);
-      result.push(sum / (i + 1));
-    } else if (i === period - 1) {
-      const slice = data.slice(0, period);
-      const sum = slice.reduce((a, b) => a + b, 0);
-      result.push(sum / period);
-    } else {
-      const emaVal = (data[i] - result[i - 1]) * multiplier + result[i - 1];
-      result.push(emaVal);
-    }
-  }
-  return result;
-}
-
-// Standard Deviation
-function stdDev(data: number[], period: number): (number | null)[] {
-  const result: (number | null)[] = [];
-  for (let i = 0; i < data.length; i++) {
-    if (i < period - 1) {
-      result.push(null);
-    } else {
-      const slice = data.slice(i - period + 1, i + 1);
-      const mean = slice.reduce((a, b) => a + b, 0) / period;
-      const squaredDiffs = slice.map(x => Math.pow(x - mean, 2));
-      const variance = squaredDiffs.reduce((a, b) => a + b, 0) / period;
-      result.push(Math.sqrt(variance));
-    }
-  }
-  return result;
-}
-
-// Bollinger Bands
+/**
+ * Calculate Bollinger Bands using trading-signals library
+ */
 export function calculateBollingerBands(
   candles: Candle[],
   period = CONFIG.BB_PERIOD,
   stdDevMultiplier = CONFIG.BB_STD_DEV
 ): BollingerBands {
-  const closes = candles.map(c => c.close);
-  const middle = sma(closes, period);
-  const std = stdDev(closes, period);
-
+  const middle: (number | null)[] = [];
   const upper: (number | null)[] = [];
   const lower: (number | null)[] = [];
   const width: (number | null)[] = [];
   const widthPct: (number | null)[] = [];
   const percentB: (number | null)[] = [];
 
-  for (let i = 0; i < candles.length; i++) {
-    const m = middle[i];
-    const s = std[i];
+  const bb = new TSBollingerBands(period, stdDevMultiplier);
 
-    if (m === null || s === null) {
+  for (let i = 0; i < candles.length; i++) {
+    const close = candles[i].close;
+    bb.add(close);
+
+    if (bb.isStable) {
+      const result = bb.getResult();
+      if (result) {
+        const m = Number(result.middle);
+        const u = Number(result.upper);
+        const l = Number(result.lower);
+        const w = u - l;
+
+        middle.push(m);
+        upper.push(u);
+        lower.push(l);
+        width.push(w);
+        widthPct.push(m !== 0 ? (w / m) * 100 : null);
+        percentB.push(u !== l ? (close - l) / (u - l) : null);
+      } else {
+        middle.push(null);
+        upper.push(null);
+        lower.push(null);
+        width.push(null);
+        widthPct.push(null);
+        percentB.push(null);
+      }
+    } else {
+      middle.push(null);
       upper.push(null);
       lower.push(null);
       width.push(null);
       widthPct.push(null);
       percentB.push(null);
-    } else {
-      const u = m + (stdDevMultiplier * s);
-      const l = m - (stdDevMultiplier * s);
-      const w = u - l;
-
-      upper.push(u);
-      lower.push(l);
-      width.push(w);
-      widthPct.push((w / m) * 100);
-      percentB.push((closes[i] - l) / (u - l));
     }
   }
 
   return { middle, upper, lower, width, widthPct, percentB };
 }
 
-// True Range
-function trueRange(candles: Candle[]): number[] {
-  const result: number[] = [];
-  for (let i = 0; i < candles.length; i++) {
-    if (i === 0) {
-      result.push(candles[i].high - candles[i].low);
-    } else {
-      const tr1 = candles[i].high - candles[i].low;
-      const tr2 = Math.abs(candles[i].high - candles[i - 1].close);
-      const tr3 = Math.abs(candles[i].low - candles[i - 1].close);
-      result.push(Math.max(tr1, tr2, tr3));
-    }
-  }
-  return result;
-}
-
-// ATR (Average True Range)
+/**
+ * Calculate ATR (Average True Range) using trading-signals library
+ */
 export function calculateATR(candles: Candle[], period = CONFIG.ATR_PERIOD): ATRData {
-  const tr = trueRange(candles);
-  const atrValues = ema(tr, period);
-  const closes = candles.map(c => c.close);
+  const atr: (number | null)[] = [];
+  const atrPct: (number | null)[] = [];
 
-  const atrPct = atrValues.map((atr, i) => {
-    if (atr === null || closes[i] === 0) return null;
-    return (atr / closes[i]) * 100;
-  });
+  const atrIndicator = new TSATR(period);
 
-  return { atr: atrValues, atrPct };
-}
+  for (let i = 0; i < candles.length; i++) {
+    const candle = candles[i];
+    atrIndicator.add({
+      high: candle.high,
+      low: candle.low,
+      close: candle.close,
+    });
 
-// Percentile Rank (rolling)
-function percentileRank(data: (number | null)[], lookback = CONFIG.LOOKBACK_PERIOD): (number | null)[] {
-  const result: (number | null)[] = [];
-  for (let i = 0; i < data.length; i++) {
-    if (data[i] === null || i < lookback - 1) {
-      result.push(null);
+    if (atrIndicator.isStable) {
+      const atrValue = Number(atrIndicator.getResult());
+      atr.push(atrValue);
+      atrPct.push(candle.close !== 0 ? (atrValue / candle.close) * 100 : null);
     } else {
-      const window = data.slice(Math.max(0, i - lookback + 1), i + 1).filter((x): x is number => x !== null);
-      if (window.length < 2) {
-        result.push(null);
-      } else {
-        const current = data[i] as number;
-        const countLess = window.filter(x => x < current).length;
-        result.push((countLess / (window.length - 1)) * 100);
-      }
+      atr.push(null);
+      atrPct.push(null);
     }
   }
+
+  return { atr, atrPct };
+}
+
+/**
+ * Calculate SMA using trading-signals library
+ */
+function calculateSMA(data: number[], period: number): (number | null)[] {
+  const result: (number | null)[] = [];
+  const sma = new TSSMA(period);
+
+  for (const value of data) {
+    sma.add(value);
+    if (sma.isStable) {
+      result.push(Number(sma.getResult()));
+    } else {
+      result.push(null);
+    }
+  }
+
   return result;
 }
 
-// Volume Ratio
+/**
+ * Calculate Volume Ratio (current volume / SMA of volume)
+ */
 function volumeRatio(candles: Candle[], period = 20): (number | null)[] {
   const volumes = candles.map(c => c.volume);
-  const smaVolume = sma(volumes, period);
+  const smaVolume = calculateSMA(volumes, period);
 
   return volumes.map((vol, i) => {
     const avg = smaVolume[i];
@@ -182,7 +143,38 @@ function volumeRatio(candles: Candle[], period = 20): (number | null)[] {
   });
 }
 
-// Detect Squeeze State
+/**
+ * Calculate Percentile Rank (rolling window)
+ * Fixed formula: uses window.length instead of window.length - 1
+ */
+function percentileRank(data: (number | null)[], lookback = CONFIG.LOOKBACK_PERIOD): (number | null)[] {
+  const result: (number | null)[] = [];
+
+  for (let i = 0; i < data.length; i++) {
+    if (data[i] === null || i < lookback - 1) {
+      result.push(null);
+    } else {
+      const window = data
+        .slice(Math.max(0, i - lookback + 1), i + 1)
+        .filter((x): x is number => x !== null);
+
+      if (window.length < 2) {
+        result.push(null);
+      } else {
+        const current = data[i] as number;
+        const countLess = window.filter(x => x < current).length;
+        // Fixed: use window.length instead of window.length - 1
+        result.push((countLess / window.length) * 100);
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Detect Squeeze State based on BB Width Percentile
+ */
 function detectSqueezeState(bbWidthPercentile: number | null): SqueezeState {
   if (bbWidthPercentile === null) return 'N/A';
 
@@ -196,7 +188,9 @@ function detectSqueezeState(bbWidthPercentile: number | null): SqueezeState {
   return 'NORMAL';
 }
 
-// Count consecutive squeeze bars
+/**
+ * Count consecutive squeeze bars from the end
+ */
 function countSqueezeBars(squeezeStates: SqueezeState[]): number {
   let count = 0;
   for (let i = squeezeStates.length - 1; i >= 0; i--) {
@@ -209,13 +203,17 @@ function countSqueezeBars(squeezeStates: SqueezeState[]): number {
   return count;
 }
 
-// Check if was in squeeze recently
+/**
+ * Check if price was in squeeze within recent bars
+ */
 function wasInSqueezeRecently(squeezeStates: SqueezeState[], lookback = CONFIG.SQUEEZE_LOOKBACK_BARS): boolean {
   const recentStates = squeezeStates.slice(-lookback - 1, -1);
   return recentStates.some(s => s === 'SQUEEZE' || s === 'TIGHT_SQUEEZE');
 }
 
-// Detect Breakout Signal
+/**
+ * Breakout detection result
+ */
 interface BreakoutResult {
   signal: BreakoutSignal;
   squeezeBars: number;
@@ -223,6 +221,10 @@ interface BreakoutResult {
   inSqueezeRecently: boolean;
 }
 
+/**
+ * Detect Breakout Signal
+ * Requires: price crossing BB band + was in squeeze recently
+ */
 function detectBreakout(
   candles: Candle[],
   bb: BollingerBands,
@@ -251,14 +253,14 @@ function detectBreakout(
   const currLower = bb.lower[lastIdx];
   const prevLower = bb.lower[prevIdx];
 
-  // Bullish Breakout
+  // Bullish Breakout: Close crosses above upper band after squeeze
   if (currUpper !== null && prevUpper !== null &&
       current.close > currUpper &&
       previous.close <= prevUpper &&
       inSqueezeRecently) {
     signal = 'BULLISH_BREAKOUT';
   }
-  // Bearish Breakout
+  // Bearish Breakout: Close crosses below lower band after squeeze
   else if (currLower !== null && prevLower !== null &&
            current.close < currLower &&
            previous.close >= prevLower &&
@@ -269,13 +271,18 @@ function detectBreakout(
   return { signal, squeezeBars, volumeSurge, inSqueezeRecently };
 }
 
-// Round helper
+/**
+ * Round helper with null safety
+ */
 function round(value: number | null, decimals: number): number | null {
   if (value === null || value === undefined || isNaN(value)) return null;
   return Math.round(value * Math.pow(10, decimals)) / Math.pow(10, decimals);
 }
 
-// Complete Volatility Analysis
+/**
+ * Complete Volatility Analysis
+ * Combines all indicators to produce analysis result
+ */
 export function analyzeVolatility(candles: Candle[]): VolatilityAnalysis {
   const minPeriod = Math.max(CONFIG.BB_PERIOD, CONFIG.ATR_PERIOD, 20);
 
@@ -300,7 +307,7 @@ export function analyzeVolatility(candles: Candle[]): VolatilityAnalysis {
     };
   }
 
-  // Calculate indicators
+  // Calculate indicators using trading-signals library
   const bb = calculateBollingerBands(candles);
   const atrData = calculateATR(candles);
   const volRatios = volumeRatio(candles);
@@ -309,15 +316,15 @@ export function analyzeVolatility(candles: Candle[]): VolatilityAnalysis {
   const bbWidthPercentileArr = percentileRank(bb.widthPct);
   const atrPercentileArr = percentileRank(atrData.atrPct);
 
-  // Detect squeeze states
+  // Detect squeeze states for each bar
   const squeezeStates = bbWidthPercentileArr.map((bbPct) =>
     detectSqueezeState(bbPct)
   );
 
-  // Detect breakout
+  // Detect breakout signal
   const breakout = detectBreakout(candles, bb, squeezeStates, volRatios);
 
-  // Get current values
+  // Get current (last) values
   const lastIdx = candles.length - 1;
   const current = candles[lastIdx];
   const squeezeBars = countSqueezeBars(squeezeStates);
