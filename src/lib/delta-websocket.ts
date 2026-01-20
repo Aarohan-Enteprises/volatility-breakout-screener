@@ -46,11 +46,8 @@ class DeltaWebSocket {
         this.ws = new WebSocket(WS_URL);
 
         this.ws.onopen = () => {
-          console.log('[WS] Connected to Delta Exchange');
           this.reconnectAttempts = 0;
           this.startHeartbeat();
-
-          // Notify status change
           this.onStatusCallback?.(true);
 
           // Resubscribe to channels if reconnecting
@@ -65,15 +62,12 @@ class DeltaWebSocket {
           this.handleMessage(event.data);
         };
 
-        this.ws.onerror = (error) => {
-          console.error('[WS] Error:', error);
+        this.ws.onerror = () => {
+          // Error handled by onclose
         };
 
         this.ws.onclose = () => {
-          console.log('[WS] Connection closed');
           this.stopHeartbeat();
-
-          // Notify status change
           this.onStatusCallback?.(false);
 
           if (!this.isIntentionallyClosed) {
@@ -110,8 +104,11 @@ class DeltaWebSocket {
 
       // Handle candlestick updates
       if (message.type?.startsWith('candlestick_') && message.symbol) {
+        // candle_start_time is in microseconds, convert to seconds
+        const timeInSeconds = Math.floor((message.candle_start_time || 0) / 1000000);
+
         const candle: Candle = {
-          time: Math.floor((message.candle_start_time || 0) / 1000000), // Convert microseconds to seconds
+          time: timeInSeconds,
           open: message.open || 0,
           high: message.high || 0,
           low: message.low || 0,
@@ -132,14 +129,11 @@ class DeltaWebSocket {
 
   private attemptReconnect() {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('[WS] Max reconnect attempts reached');
       return;
     }
 
     this.reconnectAttempts++;
     const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
-
-    console.log(`[WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
 
     setTimeout(() => {
       if (!this.isIntentionallyClosed && this.onCandleCallback) {
@@ -157,7 +151,6 @@ class DeltaWebSocket {
         },
       };
       this.ws.send(JSON.stringify(message));
-      console.log('[WS] Subscribed to:', channels.map(c => c.name).join(', '));
     }
   }
 
@@ -210,6 +203,16 @@ class DeltaWebSocket {
 
   isConnected(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  /**
+   * Update the candle callback (used when React dependencies change)
+   */
+  updateCallback(onCandle: CandleCallback, onStatus?: StatusCallback): void {
+    this.onCandleCallback = onCandle;
+    if (onStatus) {
+      this.onStatusCallback = onStatus;
+    }
   }
 }
 

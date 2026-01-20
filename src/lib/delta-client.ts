@@ -101,11 +101,9 @@ export async function fetchSymbols(): Promise<string[]> {
     symbolsCache = [...new Set(symbols)] as string[];
     symbolsCacheTime = now;
 
-    console.log(`Loaded ${symbolsCache.length} symbols from Delta Exchange`);
     return symbolsCache;
 
-  } catch (error) {
-    console.error('Failed to fetch symbols:', error);
+  } catch {
     return symbolsCache.length > 0 ? symbolsCache : ['BTCUSD', 'ETHUSD', 'SOLUSD'];
   }
 }
@@ -141,7 +139,6 @@ export async function fetchCandles(
     const ohlcData = data.result || [];
 
     if (!Array.isArray(ohlcData) || ohlcData.length === 0) {
-      console.warn(`No data returned for ${symbol} ${timeframe}`);
       return [];
     }
 
@@ -174,8 +171,7 @@ export async function fetchCandles(
 
     return candles;
 
-  } catch (error) {
-    console.error(`Failed to fetch candles for ${symbol} ${timeframe}:`, error);
+  } catch {
     return [];
   }
 }
@@ -263,7 +259,9 @@ export function getStoredCandles(symbol: string, timeframe: string): Candle[] | 
  */
 export function updateCandle(symbol: string, timeframe: string, newCandle: Candle): boolean {
   const candles = getStoredCandles(symbol, timeframe);
-  if (!candles || candles.length === 0) return false;
+  if (!candles || candles.length === 0) {
+    return false;
+  }
 
   const lastCandle = candles[candles.length - 1];
 

@@ -105,18 +105,19 @@ export default function Home() {
       try {
         const symbols = await fetchSymbols();
         setAllSymbols(symbols);
-      } catch (error) {
-        console.error('Failed to fetch symbols:', error);
+      } catch {
+        // Silently fail, will use default symbols
       }
     }
     loadSymbols();
   }, []);
 
   // Check for alerts (only after initial load)
-  const checkForAlerts = useCallback((newData: ScreenerData, timeframes: string[]) => {
+  // isFullUpdate: true for initial/refresh load, false for incremental WebSocket updates
+  const checkForAlerts = useCallback((newData: ScreenerData, timeframes: string[], isFullUpdate = true) => {
     // On initial load, just store data as baseline without generating alerts
     if (isInitialLoadRef.current) {
-      previousDataRef.current = newData;
+      previousDataRef.current = { ...newData };
       isInitialLoadRef.current = false;
       return;
     }
@@ -176,6 +177,12 @@ export default function Home() {
             timestamp: Date.now(),
           });
         }
+
+        // Update previous data for this symbol/timeframe (incremental merge)
+        if (!previousDataRef.current[symbol]) {
+          previousDataRef.current[symbol] = {};
+        }
+        previousDataRef.current[symbol][tf] = current;
       }
     }
 
@@ -183,7 +190,10 @@ export default function Home() {
       setAlerts(prev => [...newAlerts, ...prev].slice(0, 50));
     }
 
-    previousDataRef.current = newData;
+    // For full updates, replace entirely; for incremental, we already merged above
+    if (isFullUpdate) {
+      previousDataRef.current = { ...newData };
+    }
   }, []);
 
   // Handle incoming WebSocket candle update
@@ -213,13 +223,15 @@ export default function Home() {
       return updated;
     });
 
+    // Update last refresh timestamp on every update
+    setLastRefresh(new Date());
+
     // Only check for alerts on new candle close (not during candle formation)
     if (isNewCandle) {
       const newData: ScreenerData = {
         [symbol]: { [timeframe]: analysis },
       };
-      checkForAlerts(newData, [timeframe]);
-      setLastRefresh(new Date());
+      checkForAlerts(newData, [timeframe], false); // false = incremental update
     }
   }, [watchlist, enabledTimeframes, checkForAlerts]);
 
@@ -241,8 +253,8 @@ export default function Home() {
       checkForAlerts(data, enabledTimeframes);
       setScreenerData(data);
       setLastRefresh(new Date());
-    } catch (error) {
-      console.error('Failed to fetch data:', error);
+    } catch {
+      // Silently fail
     } finally {
       if (showLoading) {
         setIsLoading(false);
@@ -274,14 +286,14 @@ export default function Home() {
 
         // Subscribe to candlestick channels
         deltaWebSocket.subscribe(watchlist, enabledTimeframes);
-      } catch (error) {
-        console.error('Failed to connect WebSocket:', error);
+      } catch {
         setWsConnected(false);
       }
     };
 
-    // If already connected, just update subscriptions
+    // If already connected, update callback and subscriptions
     if (deltaWebSocket.isConnected()) {
+      deltaWebSocket.updateCallback(handleCandleUpdate, handleWsStatus);
       deltaWebSocket.subscribe(watchlist, enabledTimeframes);
     } else if (!wsInitializedRef.current) {
       connectWebSocket();
