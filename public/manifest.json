@@ -1,0 +1,16 @@
+{
+  "name": "Volatility Breakout Screener",
+  "short_name": "VBC Screener",
+  "description": "Real-time crypto volatility breakout screener for Delta Exchange using Bollinger Bands + ATR",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "icons": [
+    {
+      "src": "/globe.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
